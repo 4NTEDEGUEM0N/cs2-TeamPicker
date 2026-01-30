@@ -17,6 +17,8 @@ namespace TeamPicker;
 
 public class TeamPickerConfig : BasePluginConfig
 {
+    public int ConfigVersion { get; set; } = 2;
+
     [JsonPropertyName("MapPool")]
     public List<string> MapPool { get; set; } = new List<string> 
     { 
@@ -35,7 +37,6 @@ public enum States
     Disabled,
     Active,
     ChoosingCaptains,
-    X1,
     CaptainsPicking,
     GettingPlayerLevel,
     Randomizing,
@@ -72,7 +73,6 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     public Modes mode = Modes.Captians;
     public CCSPlayerController? Captain1 { get; set; }
     public CCSPlayerController? Captain2 { get; set; }
-    public HookResult? deathHook;
     public PickOrder pickOrder = PickOrder.ABABABAB;
     public int pickOrderIndex = 0;
     public int CurrentPickTurn { get; set; } = 1; // 1 = Vez do Cap1, 2 = Vez do Cap2
@@ -128,7 +128,7 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     [ConsoleCommand("css_tp", "Activate TeamPicker Plugin")]
     public void TeamPickerCommand(CCSPlayerController? player, CommandInfo command)
     {
-        bool disabledOrActive =  currentState == States.Disabled || currentState != States.Active;
+        bool disabledOrActive =  currentState == States.Disabled || currentState == States.Active;
 
         string parameters = command.ArgString;
         if (string.IsNullOrWhiteSpace(parameters) && disabledOrActive)
@@ -144,6 +144,7 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         }
         else if (string.Equals(parameters, "restart", StringComparison.OrdinalIgnoreCase) && (currentState != States.Disabled))
         {
+            ClearData();
             currentState = States.Active;
             Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Restarted");
             Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Mode:{ChatColors.Red} {mode}{ChatColors.Default}");
@@ -151,6 +152,7 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         }
         else if (string.Equals(parameters, "disable", StringComparison.OrdinalIgnoreCase) && (currentState != States.Disabled))
         {
+            ClearData();
             currentState = States.Disabled;
             Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Disabled");
             return;
@@ -175,22 +177,28 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
                 case Modes.Captians:
                     if (currentState == States.Active)
                     {
-                        currentState = States.ChoosingCaptains;
+                        ClearData();
                         ChoosingCaptains();
                     }
                     else if (currentState == States.ChoosingCaptains)
                     {
-                        currentState = States.X1;
                         X1();
                     }
                     break;
                 case Modes.Level:
-                    currentState = States.GettingPlayerLevel;
+                    ClearData();
                     LevelTeamPicker();
                     break;
                 case Modes.Random:
-                    currentState = States.GettingPlayerLevel;
-                    RandomTeamPicker();
+                    if (currentState == States.Active)
+                    {
+                        ClearData();
+                        RandomTeamPicker();
+                    }
+                    else if (currentState == States.Randomizing)
+                    {
+                        X1();
+                    }
                     break;
             }
             return;
@@ -198,9 +206,7 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
 
     public void ChoosingCaptains()
     {
-        PlayersToPick = new List<CCSPlayerController>();
-        PlayersTeam = new List<(CCSPlayerController?, CsTeam)>();
-        CurrentPickTurn = 1;
+        currentState = States.ChoosingCaptains;
 
         //var players = Utilities.GetPlayers().Where(p => !p.IsBot && !p.IsHLTV).ToList();
         var players = Utilities.GetPlayers().Where(p => !p.IsHLTV).ToList();
@@ -282,6 +288,16 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Ordem de Picks: {ChatColors.Green} {pickOrder}{ChatColors.Default} ");
     }
 
+    [ConsoleCommand("css_randomcaptains", "Print current captains")]
+    public void RandomCaptainsCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        if (currentState != States.ChoosingCaptains) return;
+
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Capitão 1: {ChatColors.Blue} {Captain1?.PlayerName}{ChatColors.Default} (CT)");
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Capitão 2: {ChatColors.Orange} {Captain2?.PlayerName}{ChatColors.Default} (TR)");
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Ordem de Picks: {ChatColors.Green} {pickOrder}{ChatColors.Default} ");
+    }
+
     [ConsoleCommand("css_pickorder", "Change Pick Order")]
     public void PickOrderCommand(CCSPlayerController? player, CommandInfo command)
     {
@@ -310,7 +326,7 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     {
         if (segundos > 0)
         {
-            Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Red}{segundos}{ChatColors.Default}...");
+            Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Red} {segundos}{ChatColors.Default}...");
             
             AddTimer(1.0f, () => IniciarContagemRegressiva(segundos - 1, func));
         }
@@ -324,12 +340,10 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     {
         Server.ExecuteCommand("mp_ct_default_secondary weapon_deagle");
         Server.ExecuteCommand("mp_t_default_secondary weapon_deagle");
-        //PlayersToPick = Utilities.GetPlayers().Where(p => !p.IsBot && !p.IsHLTV && p != Captain1 && p != Captain2)
-        //                            .Where(p => !PlayersTeam.Any(pt => pt.Item1 == p)).ToList();
-        PlayersToPick = Utilities.GetPlayers().Where(p => !p.IsHLTV && p != Captain1 && p != Captain2)
-                                              .Where(p => !PlayersTeam.Any(pt => pt.Item1 == p)).ToList();
+        //var specPlayers = Utilities.GetPlayers().Where(p => !p.IsBot && !p.IsHLTV && p != Captain1 && p != Captain2).ToList()
+        var specPlayers = Utilities.GetPlayers().Where(p => !p.IsHLTV && p != Captain1 && p != Captain2).ToList();
 
-        foreach (var player in PlayersToPick)
+        foreach (var player in specPlayers)
         {
             player.ChangeTeam(CsTeam.Spectator);
         }
@@ -386,15 +400,38 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         DeregisterEventHandler<EventPlayerDeath>(HandlerOnDeathEvent);
         
         Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Blue} {vencedor.PlayerName}{ChatColors.Default} ganhou o X1!");
+
+        bool teamsChanged = vencedor.Team == CsTeam.Terrorist;
         
-        Captain1?.ChangeTeam(CsTeam.CounterTerrorist);
-        Captain2?.ChangeTeam(CsTeam.Terrorist);
+        if (teamsChanged)
+        {
+            Captain1?.ChangeTeam(CsTeam.CounterTerrorist);
+            Captain2?.ChangeTeam(CsTeam.Terrorist);
+        }
 
         Server.ExecuteCommand("mp_ct_default_secondary weapon_hkp2000");
         Server.ExecuteCommand("mp_t_default_secondary weapon_glock");
         
-        currentState = States.CaptainsPicking;
-        CaptainsPicking();
+        if (currentState == States.ChoosingCaptains)
+            CaptainsPicking();
+        else if (currentState == States.Randomizing)
+        {
+            foreach (var player in PlayersTeam)
+            {
+                CsTeam team;
+                if (teamsChanged)
+                    team = (player.Item2 == CsTeam.CounterTerrorist) ? CsTeam.Terrorist : CsTeam.CounterTerrorist;
+                else
+                    team = (player.Item2 == CsTeam.CounterTerrorist) ? CsTeam.CounterTerrorist : CsTeam.Terrorist;
+                player.Item1?.ChangeTeam(team);
+            }
+            Server.ExecuteCommand("mp_restartgame 1");
+            CurrentPickTurn = 1;
+            pickOrderIndex = 0;
+            currentState = States.MapVeto;
+            MapVeto();
+        }
+
     }
 
     [ConsoleCommand("css_pick2", "Debug command: Pick bypass captain order")]
@@ -406,6 +443,8 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
 
     public void CaptainsPicking()
     {
+        currentState = States.CaptainsPicking;
+
         DeregisterEventHandler<EventPlayerDeath>(HandlerOnDeathEvent);
         pickOrderIndex = 0;
         CurrentPickTurn = 1;
@@ -507,18 +546,6 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         }
     }
 
-    public void LevelTeamPicker()
-    {
-        currentState = States.Disabled;
-        return;
-    }
-
-    public void RandomTeamPicker()
-    {
-        currentState = States.Disabled;
-        return;
-    }
-
     public void MapVeto()
     {
         MapsRemaining = new List<string>(Config.MapPool);
@@ -609,5 +636,66 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         pickOrderIndex = 0;
         currentState = States.Disabled;
         Server.ExecuteCommand($"map {MapsRemaining[0]}");
+    }
+
+    public void RandomTeamPicker()
+    {
+        currentState = States.Randomizing;
+
+        //var players = Utilities.GetPlayers().Where(p => !p.IsBot && !p.IsHLTV).ToList();
+        var players = Utilities.GetPlayers().Where(p => !p.IsHLTV).ToList();
+
+        if (players.Count < 2)
+        {
+            Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Jogadores insuficientes!");
+            currentState = States.Active;
+            return;
+        }
+
+        Random rnd = new Random();
+        var randomPlayers = players.OrderBy(x => rnd.Next()).ToList();
+        int mid = randomPlayers.Count / 2;
+
+        var index = 0;
+        foreach (var player in randomPlayers)
+        {
+            var team = (index < mid) ? CsTeam.CounterTerrorist : CsTeam.Terrorist;
+            player.ChangeTeam(team);
+            PlayersTeam.Add((player, team));
+            index++;
+        }
+        Captain1 = randomPlayers[0];
+        Captain2 = randomPlayers[mid];
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Times definidos!");
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Capitão 1: {ChatColors.Blue} {Captain1?.PlayerName}{ChatColors.Default} (CT)");
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Capitão 2: {ChatColors.Orange} {Captain2?.PlayerName}{ChatColors.Default} (TR)");
+    }
+
+    [ConsoleCommand("css_random", "Redo team randomize")]
+    public void RandomCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        if (currentState != States.Randomizing) return;
+        RandomTeamPicker();
+    }
+
+    public void LevelTeamPicker()
+    {
+        currentState = States.GettingPlayerLevel;
+        currentState = States.Disabled;
+        return;
+    }
+
+    public void ClearData()
+    {
+        try { DeregisterEventHandler<EventPlayerDeath>(HandlerOnDeathEvent); } catch {}
+        Captain1 = null;
+        Captain2 = null;
+        pickOrder = PickOrder.ABABABAB;
+        pickOrderIndex = 0;
+        CurrentPickTurn = 1;
+        PlayersLevel.Clear();
+        PlayersTeam.Clear();
+        PlayersToPick.Clear();
+        MapsRemaining.Clear();
     }
 }
