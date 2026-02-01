@@ -92,7 +92,7 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         Logger.LogInformation("TeamPicker loaded successfully!");
     }
 
-    public bool DBConnect = false;
+    public bool DBConnected = false;
     public States currentState = States.Disabled;
     public Modes mode = Modes.Captians;
     public CCSPlayerController? Captain1 { get; set; }
@@ -144,7 +144,7 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
 
             using var cmd = new MySqlCommand(sql, conn);
             await cmd.ExecuteNonQueryAsync();
-            DBConnect = true;
+            DBConnected = true;
         }
         catch (Exception ex)
         {
@@ -303,8 +303,15 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
                 case Modes.Level:
                     if (currentState == States.Active)
                     {
-                        ClearData();
-                        GettingPlayersLevel();
+                        if (DBConnected)
+                        {
+                            ClearData();
+                            GettingPlayersLevel();
+                        }
+                        else
+                        {
+                            Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Red} Falha ao conectar com o banco de dados.");
+                        }
                     }
                     else if (currentState == States.GettingPlayerLevel)
                     {
@@ -879,6 +886,8 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         else
             players = Utilities.GetPlayers().Where(p => !p.IsBot && !p.IsHLTV).ToList();
 
+        List<Task> loadingTasks = new List<Task>();
+
         foreach (var player in players)
         {
             if (!player.IsValid) return;
@@ -892,12 +901,28 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
             }
             else
             {
-                if (!PlayersLevel.TryGetValue(player.SteamID.ToString(), out level))
-                    Task.Run(async () => await LoadPlayerLevel(player));
+                if (!PlayersLevel.ContainsKey(player.SteamID.ToString()))
+                    loadingTasks.Add(LoadPlayerLevel(player));
             }
         }
+
         Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Carregando o level dos jogadores...");
-        AddTimer(4.0f, () => ShowPlayersLevel());
+        Task.Run(async () =>
+        {
+            try
+            {
+                await Task.WhenAll(loadingTasks);
+
+                Server.NextFrame(() =>
+                {
+                    ShowPlayersLevel();
+                });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[TeamPicker Error] Erro ao aguardar tasks: {ex.Message}");
+            }
+        });
     }
 
     public void ShowPlayersLevel()
@@ -1029,20 +1054,21 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
 
         // 1. Aleatoriedade total no início (Shuffle - Algoritmo Fisher-Yates)
         Random rng = new Random();
-        int n = listaJogadores.Count;
+        var randomPlayers = listaJogadores.OrderBy(x => rng.Next()).ToList();
+        int n = randomPlayers.Count;
         while (n > 1)
         {
             n--;
             int k = rng.Next(n + 1);
-            var value = listaJogadores[k];
-            listaJogadores[k] = listaJogadores[n];
-            listaJogadores[n] = value;
+            var value = randomPlayers[k];
+            randomPlayers[k] = randomPlayers[n];
+            randomPlayers[n] = value;
         }
 
         // Divide ao meio
-        int meio = listaJogadores.Count / 2;
-        List<Jogador> timeA = listaJogadores.Take(meio).ToList();
-        List<Jogador> timeB = listaJogadores.Skip(meio).ToList();
+        int meio = randomPlayers.Count / 2;
+        List<Jogador> timeA = randomPlayers.Take(meio).ToList();
+        List<Jogador> timeB = randomPlayers.Skip(meio).ToList();
 
         // 2. Loop de Balanceamento
         int maxTentativas = 100;
