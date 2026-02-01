@@ -12,12 +12,30 @@ using System;
 using CounterStrikeSharp.API.Modules.Commands.Targeting;
 using CounterStrikeSharp.API.Modules.Entities.Constants;
 using System.Text.Json.Serialization;
+using MySqlConnector;
+using System.Collections.Concurrent;
 
 namespace TeamPicker;
 
 public class TeamPickerConfig : BasePluginConfig
 {
-    public int ConfigVersion { get; set; } = 2;
+    [JsonPropertyName("ConfigVersion")] 
+    public override int Version { get; set; } = 3;
+
+    [JsonPropertyName("DbHost")]
+    public string DbHost { get; set; } = "";
+
+    [JsonPropertyName("DbPort")]
+    public string DbPort { get; set; } = "3306";
+    
+    [JsonPropertyName("DbUser")]
+    public string DbUser { get; set; } = "";
+
+    [JsonPropertyName("DbPassword")]
+    public string DbPass { get; set; } = "";
+
+    [JsonPropertyName("DbName")]
+    public string DbName { get; set; } = "";
 
     [JsonPropertyName("MapPool")]
     public List<string> MapPool { get; set; } = new List<string> 
@@ -30,6 +48,9 @@ public class TeamPickerConfig : BasePluginConfig
         "de_ancient", 
         "de_anubis" 
     };
+
+    [JsonIgnore] 
+    public string ConnectionString => $"Server={DbHost};Port={DbPort};Database={DbName};User ID={DbUser};Password={DbPass};";
 }
 
 public enum States
@@ -39,6 +60,7 @@ public enum States
     ChoosingCaptains,
     CaptainsPicking,
     GettingPlayerLevel,
+    LevelRandomizing,
     Randomizing,
     MapVeto
 }
@@ -66,9 +88,11 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
 
     public override void Load(bool hotReload)
     {
+        Task.Run(InitDatabase);
         Logger.LogInformation("TeamPicker loaded successfully!");
     }
 
+    public bool DBConnect = false;
     public States currentState = States.Disabled;
     public Modes mode = Modes.Captians;
     public CCSPlayerController? Captain1 { get; set; }
@@ -78,7 +102,7 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     public bool x1 = false;
     public bool bots = false;
     public int CurrentPickTurn { get; set; } = 1; // 1 = Vez do Cap1, 2 = Vez do Cap2
-    public List<(CCSPlayerController?, int)> PlayersLevel = new List<(CCSPlayerController?, int)>();
+    public ConcurrentDictionary<string, int> PlayersLevel = new ConcurrentDictionary<string, int>();
     public List<(CCSPlayerController?, CsTeam)> PlayersTeam = new List<(CCSPlayerController?, CsTeam)>();
     public List<CCSPlayerController> PlayersToPick = new List<CCSPlayerController>();
 
@@ -88,13 +112,44 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     {
         this.Config = config;
 
+        if (string.IsNullOrEmpty(config.DbHost) || string.IsNullOrEmpty(config.DbUser))
+        {
+            Logger.LogError("Configuração de Banco de Dados incompleta! Verifique o arquivo json.");
+        }
+
         if (config.MapPool == null || config.MapPool.Count < 1)
         {
             config.MapPool = new List<string> { "de_mirage", "de_inferno", "de_nuke", "de_overpass", "de_dust2", "de_ancient", "de_anubis"};
             Logger.LogWarning("MapPool estava vazio na config! Usando padrão.");
         }
-        
+
         Logger.LogInformation($"Config carregada com {config.MapPool.Count} mapas.");
+    }
+
+    private async Task InitDatabase()
+    {
+        try
+        {
+            string connString = Config.ConnectionString;
+            using var conn = new MySqlConnection(connString);
+            await conn.OpenAsync();
+            
+            string sql = @"
+                CREATE TABLE IF NOT EXISTS `gc_levels` (
+                  `steamid` VARCHAR(64) NOT NULL,
+                  `level` VARCHAR(10) NOT NULL,
+                  `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  PRIMARY KEY (`steamid`)
+                );";
+
+            using var cmd = new MySqlCommand(sql, conn);
+            await cmd.ExecuteNonQueryAsync();
+            DBConnect = true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[TeamPicker SQL Error] Falha ao iniciar banco: {ex.Message}");
+        }
     }
 
     /*
@@ -117,18 +172,17 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         string parameters = command.ArgString;
         if (string.IsNullOrWhiteSpace(parameters) && disabledOrActive)
             mode = Modes.Captians;
-        else if (string.Equals(parameters, "random", StringComparison.OrdinalIgnoreCase) && disabledOrActive)
+        else if ((parameters == "3"|| string.Equals(parameters, "random", StringComparison.OrdinalIgnoreCase)) && disabledOrActive)
         {
             mode = Modes.Random;
         }
-        else if (string.Equals(parameters, "captains", StringComparison.OrdinalIgnoreCase) && disabledOrActive)
+        else if ((parameters == "1" || string.Equals(parameters, "captains", StringComparison.OrdinalIgnoreCase)) && disabledOrActive)
         {
             mode = Modes.Captians;
         }
-        else if (string.Equals(parameters, "level", StringComparison.OrdinalIgnoreCase) && disabledOrActive)
+        else if ((parameters == "2" || string.Equals(parameters, "level", StringComparison.OrdinalIgnoreCase)) && disabledOrActive)
         {
-            //mode = Modes.Level;
-            player?.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Modo indisponível :(");
+            mode = Modes.Level;
         }
         else if (string.Equals(parameters, "bots", StringComparison.OrdinalIgnoreCase) && (currentState != States.Disabled))
         {
@@ -247,8 +301,20 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
                     }
                     break;
                 case Modes.Level:
-                    ClearData();
-                    LevelTeamPicker();
+                    if (currentState == States.Active)
+                    {
+                        ClearData();
+                        GettingPlayersLevel();
+                    }
+                    else if (currentState == States.GettingPlayerLevel)
+                    {
+                        LevelRandomTeamPicker();
+                    }
+                    else if (currentState == States.LevelRandomizing)
+                    {
+                        if (!x1)
+                            X1();
+                    }
                     break;
                 case Modes.Random:
                     if (currentState == States.Active)
@@ -307,7 +373,7 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     [ConsoleCommand("css_captain1", "Choose Captain1")]
     public void Captain1Command(CCSPlayerController? player, CommandInfo command)
     {
-        if (currentState != States.ChoosingCaptains && currentState != States.Randomizing) return;
+        if (currentState != States.ChoosingCaptains && currentState != States.Randomizing && currentState != States.LevelRandomizing) return;
 
         string parameters = command.ArgString;
         if (string.IsNullOrWhiteSpace(parameters))
@@ -332,7 +398,7 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     [ConsoleCommand("css_captain2", "Choose Captain1")]
     public void Captain2Command(CCSPlayerController? player, CommandInfo command)
     {
-        if (currentState != States.ChoosingCaptains && currentState != States.Randomizing) return;
+        if (currentState != States.ChoosingCaptains && currentState != States.Randomizing && currentState != States.LevelRandomizing) return;
 
         string parameters = command.ArgString;
         if (string.IsNullOrWhiteSpace(parameters))
@@ -521,17 +587,19 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         x1 = false;
         if (currentState == States.ChoosingCaptains)
             CaptainsPicking();
-        else if (currentState == States.Randomizing)
+        else if (currentState == States.Randomizing || currentState == States.LevelRandomizing)
         {
-            foreach (var player in PlayersTeam)
+            PlayersTeam = PlayersTeam.Select(p => 
             {
-                CsTeam team;
+                CsTeam newTeam = p.Item2;
+                
                 if (teamsChanged)
-                    team = (player.Item2 == CsTeam.CounterTerrorist) ? CsTeam.Terrorist : CsTeam.CounterTerrorist;
-                else
-                    team = (player.Item2 == CsTeam.CounterTerrorist) ? CsTeam.CounterTerrorist : CsTeam.Terrorist;
-                player.Item1?.ChangeTeam(team);
-            }
+                    newTeam = (p.Item2 == CsTeam.CounterTerrorist) ? CsTeam.Terrorist : CsTeam.CounterTerrorist;
+                p.Item1?.ChangeTeam(newTeam);
+                
+                return (p.Item1, newTeam);
+            }).ToList();
+
             Server.ExecuteCommand("mp_restartgame 1");
             CurrentPickTurn = 1;
             pickOrderIndex = 0;
@@ -797,13 +865,320 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
             RandomTeamPicker();
         else if (currentState == States.ChoosingCaptains)
             RandomCaptains();
+        else if (currentState == States.LevelRandomizing)
+            LevelRandomTeamPicker();
     }
 
-    public void LevelTeamPicker()
+    public void GettingPlayersLevel()
     {
         currentState = States.GettingPlayerLevel;
-        currentState = States.Disabled;
-        return;
+
+        List<CCSPlayerController>? players;
+        if (bots)
+            players = Utilities.GetPlayers().Where(p => !p.IsHLTV).ToList();
+        else
+            players = Utilities.GetPlayers().Where(p => !p.IsBot && !p.IsHLTV).ToList();
+
+        foreach (var player in players)
+        {
+            if (!player.IsValid) return;
+
+            int level;
+            if (player.IsBot)
+            {
+                Random random = new Random();
+                level = random.Next(1, 21);
+                PlayersLevel[player.PlayerName] = level;
+            }
+            else
+            {
+                if (!PlayersLevel.TryGetValue(player.SteamID.ToString(), out level))
+                    Task.Run(async () => await LoadPlayerLevel(player));
+            }
+        }
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Carregando o level dos jogadores...");
+        AddTimer(4.0f, () => ShowPlayersLevel());
+    }
+
+    public void ShowPlayersLevel()
+    {
+        List<CCSPlayerController>? players;
+        if (bots)
+            players = Utilities.GetPlayers().Where(p => !p.IsHLTV).ToList();
+        else
+            players = Utilities.GetPlayers().Where(p => !p.IsBot && !p.IsHLTV).ToList();
+
+        var index = 1;
+        Server.PrintToChatAll("--------------------------------");
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Red} LEVEL DA GALERA!{ChatColors.Default}");
+        foreach (var player in players)
+        {
+            int level;
+            if (player.IsBot)
+                level = PlayersLevel.GetValueOrDefault(player.PlayerName);
+            else
+                level = PlayersLevel.GetValueOrDefault(player.SteamID.ToString());
+            Server.PrintToChatAll($" {ChatColors.Green} {player.PlayerName}{ChatColors.Default} -> {level}");
+            index++;
+        }
+
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !level <numero>{ChatColors.Default} para alterar seu level!");
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !showlevel{ChatColors.Default} para mostrar a lista novamente.");
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !tp start{ChatColors.Default} para confirmar.");
+        Server.PrintToChatAll("--------------------------------");
+    }
+
+    [ConsoleCommand("css_showlevel", "Show players level")]
+    public void ShowLevelCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        if (currentState != States.GettingPlayerLevel) return;
+        ShowPlayersLevel();
+    }
+
+    private async Task LoadPlayerLevel(CCSPlayerController player)
+    {
+        try
+        {
+            using var conn = new MySqlConnection(Config.ConnectionString);
+            await conn.OpenAsync();
+
+            string sql = "SELECT level FROM gc_levels WHERE steamid = @steamid LIMIT 1";
+            using var cmd = new MySqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@steamid", player.SteamID);
+
+            var result = await cmd.ExecuteScalarAsync();
+
+            if (result != null)
+            {
+                int level = Convert.ToInt32(result);
+                PlayersLevel[player.SteamID.ToString()] = level;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[TeamPicker SQL Load Error] {ex.Message}");
+        }
+    }
+
+    [ConsoleCommand("css_level", "Set player level")]
+    public void SetLevelCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        if (currentState != States.GettingPlayerLevel) return;
+        if (player == null || !player.IsValid) return;
+
+        string parameters = command.ArgString;
+        if (string.IsNullOrWhiteSpace(parameters))
+            return;
+
+        if (int.TryParse(command.GetArg(1), out int newLevel))
+        {
+            if (newLevel < 1 || newLevel > 21)
+            {
+                player.PrintToChat($" {ChatColors.Green}[TeamPicker]{ChatColors.Default} Nível inválido. Digite um número entre 1 e 21.");
+                return;
+            }
+
+            PlayersLevel[player.SteamID.ToString()] = newLevel;
+
+            Task.Run(async () => await SaveLevelToDb(player.SteamID, newLevel));
+
+            player.PrintToChat($" {ChatColors.Green}[TeamPicker]{ChatColors.Default} Seu nível foi atualizado para: {ChatColors.Red}{newLevel}");
+        }
+        else
+        {
+            player.PrintToChat($" {ChatColors.Green}[TeamPicker]{ChatColors.Default} Por favor, digite apenas números.");
+        }
+    }
+
+    private async Task SaveLevelToDb(ulong steamId, int level)
+    {
+        try
+        {
+            using var conn = new MySqlConnection(Config.ConnectionString);
+            await conn.OpenAsync();
+
+            string sql = @"
+                INSERT INTO gc_levels (steamid, level, updated_at) 
+                VALUES (@steamid, @level, NOW()) 
+                ON DUPLICATE KEY UPDATE level = @level, updated_at = NOW();";
+
+            using var cmd = new MySqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@steamid", steamId);
+            cmd.Parameters.AddWithValue("@level", level);
+
+            await cmd.ExecuteNonQueryAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[TeamPicker SQL Save Error] {ex.Message}");
+        }
+    }
+
+    public class Jogador
+    {
+        public string Id { get; set; } = "";
+        public int Nivel { get; set; } = 0;
+    }
+
+    public void LevelRandomTeamPicker(int tolerancia = 1)
+    {
+        currentState = States.LevelRandomizing;
+
+        // Converte o dicionário para uma Lista de objetos Jogador
+        var listaJogadores = PlayersLevel.Select(x => new Jogador { Id = x.Key, Nivel = x.Value }).ToList();
+
+        // 1. Aleatoriedade total no início (Shuffle - Algoritmo Fisher-Yates)
+        Random rng = new Random();
+        int n = listaJogadores.Count;
+        while (n > 1)
+        {
+            n--;
+            int k = rng.Next(n + 1);
+            var value = listaJogadores[k];
+            listaJogadores[k] = listaJogadores[n];
+            listaJogadores[n] = value;
+        }
+
+        // Divide ao meio
+        int meio = listaJogadores.Count / 2;
+        List<Jogador> timeA = listaJogadores.Take(meio).ToList();
+        List<Jogador> timeB = listaJogadores.Skip(meio).ToList();
+
+        // 2. Loop de Balanceamento
+        int maxTentativas = 100;
+
+        for (int tentativa = 0; tentativa < maxTentativas; tentativa++)
+        {
+            int forcaA = timeA.Sum(j => j.Nivel);
+            int forcaB = timeB.Sum(j => j.Nivel);
+            int diferenca = forcaA - forcaB;
+
+            // Se a diferença já for aceitável, paramos
+            if (Math.Abs(diferenca) <= tolerancia)
+                break;
+
+            // Lógica de Troca
+            (int indexA, int indexB)? melhorTroca = null;
+            int menorDiferencaEncontrada = Math.Abs(diferenca);
+
+            // Testa todas as trocas possíveis
+            for (int i = 0; i < timeA.Count; i++)
+            {
+                for (int j = 0; j < timeB.Count; j++)
+                {
+                    int jA_Nivel = timeA[i].Nivel;
+                    int jB_Nivel = timeB[j].Nivel;
+
+                    // Calcula hipoteticamente a nova força
+                    int novaForcaA = forcaA - jA_Nivel + jB_Nivel;
+                    int novaForcaB = forcaB - jB_Nivel + jA_Nivel;
+                    int novaDiff = Math.Abs(novaForcaA - novaForcaB);
+
+                    // Se essa troca melhora o equilíbrio, guardamos os índices
+                    if (novaDiff < menorDiferencaEncontrada)
+                    {
+                        menorDiferencaEncontrada = novaDiff;
+                        melhorTroca = (i, j);
+                    }
+                }
+            }
+
+            // Se achou uma troca que melhora, executa
+            if (melhorTroca.HasValue)
+            {
+                int idxA = melhorTroca.Value.indexA;
+                int idxB = melhorTroca.Value.indexB;
+
+                // Realiza a troca nas listas
+                var temp = timeA[idxA];
+                timeA[idxA] = timeB[idxB];
+                timeB[idxB] = temp;
+            }
+            else
+            {
+                // Máximo local atingido (nenhuma troca melhora o cenário atual)
+                break;
+            }
+        }
+
+        ExibirTime("Time A", timeA);
+        ExibirTime("Time B", timeB);
+
+        foreach (var jogador in timeA)
+        {
+            CCSPlayerController? player = null;
+            if (ulong.TryParse(jogador.Id, out ulong player_id))
+                player = Utilities.GetPlayerFromSteamId(player_id);
+            else
+                player = Utilities.GetPlayers().FirstOrDefault(p => p.PlayerName.Contains(jogador.Id, StringComparison.OrdinalIgnoreCase));
+
+            
+            if (player != null && player.IsValid)
+            {
+                PlayersTeam.Add((player, CsTeam.CounterTerrorist));
+                player.ChangeTeam(CsTeam.CounterTerrorist);
+            }
+        }
+
+        foreach (var jogador in timeB)
+        {
+            CCSPlayerController? player = null;
+            if (ulong.TryParse(jogador.Id, out ulong player_id))
+                player = Utilities.GetPlayerFromSteamId(player_id);
+            else
+                player = Utilities.GetPlayers().FirstOrDefault(p => p.PlayerName.Contains(jogador.Id, StringComparison.OrdinalIgnoreCase));
+
+            
+            if  (player != null && player.IsValid)
+            {
+                PlayersTeam.Add((player, CsTeam.Terrorist));
+                player.ChangeTeam(CsTeam.Terrorist);
+            }
+        }
+        
+        if (ulong.TryParse(timeA[0].Id, out ulong captain1SteamId))
+            Captain1 = Utilities.GetPlayerFromSteamId(captain1SteamId);
+        else
+            Captain1 = Utilities.GetPlayers().FirstOrDefault(p => p.PlayerName.Contains(timeA[0].Id, StringComparison.OrdinalIgnoreCase));
+        if (ulong.TryParse(timeB[0].Id, out ulong captain2SteamId))
+            Captain2 = Utilities.GetPlayerFromSteamId(captain2SteamId);
+        else
+            Captain2 = Utilities.GetPlayers().FirstOrDefault(p => p.PlayerName.Contains(timeB[0].Id, StringComparison.OrdinalIgnoreCase));
+        
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Capitão 1: {ChatColors.Blue} {Captain1?.PlayerName}{ChatColors.Default} (CT)");
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Capitão 2: {ChatColors.Orange} {Captain2?.PlayerName}{ChatColors.Default} (TR)");
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !random{ChatColors.Default} randomizar os times.");
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !tp start{ChatColors.Default} para confirmar.");
+    }
+
+    public void ExibirTime(string nomeTime, List<Jogador> time)
+    {
+        int soma = time.Sum(j => j.Nivel);
+        double media = time.Count > 0 ? (double)soma / time.Count : 0;
+        
+        var listaNomes = new List<string>();
+
+        foreach (var jogador in time)
+        {
+            string nome = jogador.Id;
+
+            if (ulong.TryParse(jogador.Id, out ulong targetSteamId64))
+            {
+                CCSPlayerController? player = Utilities.GetPlayerFromSteamId(targetSteamId64);
+                
+                if (player != null && !string.IsNullOrEmpty(player.PlayerName))
+                {
+                    nome = player.PlayerName;
+                }
+            }
+
+            listaNomes.Add($"{nome} ({jogador.Nivel})");
+        }
+
+        Server.PrintToChatAll("--------------------------------");
+        Server.PrintToChatAll($"[{nomeTime}] Força: {soma} | Média: {media:F1}");
+        Server.PrintToChatAll($"Elenco: {string.Join(", ", listaNomes)}");
+        Server.PrintToChatAll("--------------------------------");
     }
 
     public void ClearData()
@@ -815,7 +1190,7 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         pickOrderIndex = 0;
         CurrentPickTurn = 1;
         x1 = false;
-        PlayersLevel.Clear();
+        //PlayersLevel.Clear();
         PlayersTeam.Clear();
         PlayersToPick.Clear();
         MapsRemaining.Clear();
