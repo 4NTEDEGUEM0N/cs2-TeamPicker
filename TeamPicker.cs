@@ -14,6 +14,8 @@ using CounterStrikeSharp.API.Modules.Entities.Constants;
 using System.Text.Json.Serialization;
 using MySqlConnector;
 using System.Collections.Concurrent;
+using System.Globalization;
+using CounterStrikeSharp.API.Modules.Cvars;
 
 namespace TeamPicker;
 
@@ -62,7 +64,8 @@ public enum States
     GettingPlayerLevel,
     LevelRandomizing,
     Randomizing,
-    MapVeto
+    MapVeto,
+    GettingReady
 }
 
 public enum Modes
@@ -103,7 +106,7 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     public bool bots = false;
     public int CurrentPickTurn { get; set; } = 1; // 1 = Vez do Cap1, 2 = Vez do Cap2
     public ConcurrentDictionary<string, int> PlayersLevel = new ConcurrentDictionary<string, int>();
-    public List<(CCSPlayerController?, CsTeam)> PlayersTeam = new List<(CCSPlayerController?, CsTeam)>();
+    public Dictionary<string, CsTeam> PlayersTeam = new Dictionary<string, CsTeam>();
     public List<CCSPlayerController> PlayersToPick = new List<CCSPlayerController>();
 
     public TeamPickerConfig Config { get; set; } = new TeamPickerConfig();
@@ -163,6 +166,19 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         Server.ExecuteCommand(parameters);
     }
     */
+
+    public HookResult OnPlayerTryJoinTeam(CCSPlayerController? player, CommandInfo info)
+    {
+        if (player == null || !player.IsValid) return HookResult.Continue;
+
+        if (currentState == States.CaptainsPicking || x1)
+        {
+            Server.ExecuteCommand($"echo Troca cancelada: {player.PlayerName}");
+            return HookResult.Stop;
+        }
+
+        return HookResult.Continue;
+    }
 
     [ConsoleCommand("css_tp", "Activate TeamPicker Plugin")]
     public void TeamPickerCommand(CCSPlayerController? player, CommandInfo command)
@@ -549,6 +565,7 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         Captain2?.GiveNamedItem("weapon_knife");
 
         RegisterEventHandler<EventPlayerDeath>(HandlerOnDeathEvent);
+        AddCommandListener("jointeam", OnPlayerTryJoinTeam, HookMode.Pre);
         Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} COMEEEÇÇÇÇÇÇÇÇÇÇÇÇOOOOOOOOOOOOU!!!!!");
     }
 
@@ -577,6 +594,7 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     public void FinalizarX1(CCSPlayerController vencedor)
     {
         DeregisterEventHandler<EventPlayerDeath>(HandlerOnDeathEvent);
+        RemoveCommandListener("jointeam", OnPlayerTryJoinTeam, HookMode.Pre);
         
         Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Blue} {vencedor.PlayerName}{ChatColors.Default} ganhou o X1!");
 
@@ -596,16 +614,30 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
             CaptainsPicking();
         else if (currentState == States.Randomizing || currentState == States.LevelRandomizing)
         {
-            PlayersTeam = PlayersTeam.Select(p => 
+            var playerIds = PlayersTeam.Keys.ToList();
+
+            foreach (var steamId in playerIds)
             {
-                CsTeam newTeam = p.Item2;
-                
+                CsTeam currentTeam = PlayersTeam[steamId];
+                CsTeam newTeam = currentTeam;
+
                 if (teamsChanged)
-                    newTeam = (p.Item2 == CsTeam.CounterTerrorist) ? CsTeam.Terrorist : CsTeam.CounterTerrorist;
-                p.Item1?.ChangeTeam(newTeam);
-                
-                return (p.Item1, newTeam);
-            }).ToList();
+                {
+                    newTeam = (currentTeam == CsTeam.CounterTerrorist) ? CsTeam.Terrorist : CsTeam.CounterTerrorist;
+                    PlayersTeam[steamId] = newTeam;
+                }
+
+                if (ulong.TryParse(steamId, out ulong steamId64))
+                {
+                    var player = Utilities.GetPlayerFromSteamId64(steamId64);
+                    player?.ChangeTeam(newTeam);
+                }
+                else
+                {
+                    var player = Utilities.GetPlayers().FirstOrDefault(p => p.PlayerName.Contains(steamId, StringComparison.OrdinalIgnoreCase));
+                    player?.ChangeTeam(newTeam);
+                }
+            }
 
             Server.ExecuteCommand("mp_restartgame 1");
             CurrentPickTurn = 1;
@@ -626,19 +658,31 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     public void CaptainsPicking()
     {
         currentState = States.CaptainsPicking;
+        AddCommandListener("jointeam", OnPlayerTryJoinTeam, HookMode.Pre);
 
         DeregisterEventHandler<EventPlayerDeath>(HandlerOnDeathEvent);
         pickOrderIndex = 0;
         CurrentPickTurn = 1;
-        PlayersTeam.Add((Captain1, CsTeam.CounterTerrorist));
-        PlayersTeam.Add((Captain2, CsTeam.Terrorist));
+        if ((Captain1 != null && Captain1.IsValid) && (Captain2 != null && Captain2.IsValid))
+        {
+            if (ulong.TryParse(Captain1.SteamID.ToString(), out ulong captain1SteamId64) && captain1SteamId64 != 0)
+                PlayersTeam[Captain1.SteamID.ToString()] = CsTeam.CounterTerrorist;
+            else
+                PlayersTeam[Captain1.PlayerName] = CsTeam.CounterTerrorist;
+
+            if (ulong.TryParse(Captain2.SteamID.ToString(), out ulong captain2SteamId64) && captain2SteamId64 != 0)
+                PlayersTeam[Captain2.SteamID.ToString()] = CsTeam.Terrorist;
+            else
+                PlayersTeam[Captain2.PlayerName] = CsTeam.Terrorist;
+        }
 
         if (bots)
             PlayersToPick = Utilities.GetPlayers().Where(p => !p.IsHLTV && p != Captain1 && p != Captain2)
-                                                  .Where(p => !PlayersTeam.Any(pt => pt.Item1 == p)).ToList();
+                                                  .Where(p => !PlayersTeam.ContainsKey(p.SteamID.ToString()))
+                                                  .Where(p => !PlayersTeam.ContainsKey(p.PlayerName)).ToList();
         else
             PlayersToPick = Utilities.GetPlayers().Where(p => !p.IsBot && !p.IsHLTV && p != Captain1 && p != Captain2)
-                                                  .Where(p => !PlayersTeam.Any(pt => pt.Item1 == p)).ToList();
+                                                  .Where(p => !PlayersTeam.ContainsKey(p.SteamID.ToString())).ToList();
 
         foreach (var player in PlayersToPick)
         {
@@ -653,10 +697,11 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         var activeCaptain = (CurrentPickTurn == 1) ? Captain1 : Captain2;
         if (bots)
             PlayersToPick = Utilities.GetPlayers().Where(p => !p.IsHLTV && p != Captain1 && p != Captain2)
-                                                  .Where(p => !PlayersTeam.Any(pt => pt.Item1 == p)).ToList();
+                                                  .Where(p => !PlayersTeam.ContainsKey(p.SteamID.ToString()))
+                                                  .Where(p => !PlayersTeam.ContainsKey(p.PlayerName)).ToList();
         else
             PlayersToPick = Utilities.GetPlayers().Where(p => !p.IsBot && !p.IsHLTV && p != Captain1 && p != Captain2)
-                                                  .Where(p => !PlayersTeam.Any(pt => pt.Item1 == p)).ToList();
+                                                  .Where(p => !PlayersTeam.ContainsKey(p.SteamID.ToString())).ToList();
 
         var index = 1;
         activeCaptain?.PrintToChat("--------------------------------");
@@ -703,18 +748,27 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         if (isCap1Turn)
         {
             Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Blue} {Captain1?.PlayerName}{ChatColors.Default} escolheu{ChatColors.Blue} {pickedPlayer.PlayerName} {ChatColors.Default}");
-            PlayersTeam.Add((pickedPlayer, CsTeam.CounterTerrorist));
+            var steamId = pickedPlayer.SteamID;
+            if (steamId != 0)
+                PlayersTeam[pickedPlayer.SteamID.ToString()] = CsTeam.CounterTerrorist;
+            else
+                PlayersTeam[pickedPlayer.PlayerName] = CsTeam.CounterTerrorist;
             pickedPlayer.ChangeTeam(CsTeam.CounterTerrorist);
         }
         else
         {
             Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Orange} {Captain2?.PlayerName}{ChatColors.Default} escolheu{ChatColors.Orange} {pickedPlayer.PlayerName} {ChatColors.Default}");
-            PlayersTeam.Add((pickedPlayer, CsTeam.Terrorist));
+            var steamId = pickedPlayer.SteamID;
+            if (steamId != 0)
+                PlayersTeam[pickedPlayer.SteamID.ToString()] = CsTeam.Terrorist;
+            else
+                PlayersTeam[pickedPlayer.PlayerName] = CsTeam.Terrorist;
             pickedPlayer.ChangeTeam(CsTeam.Terrorist);
         }
 
         if (PlayersToPick.Count == 0)
         {
+            RemoveCommandListener("jointeam", OnPlayerTryJoinTeam, HookMode.Pre);
             Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Times definidos!");
             Server.ExecuteCommand("mp_restartgame 1");
             CurrentPickTurn = 1;
@@ -741,6 +795,39 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         CurrentPickTurn = 1;
         Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Vai começar os vetos.");
         ShowVetoMenu();
+    }
+
+    public HookResult HandlerPlayerConnectFull(EventPlayerConnectFull @event, GameEventInfo info)
+    {
+        var player = @event.Userid;
+
+        if (player != null && player.IsValid)
+        {
+            var steamId = player.SteamID;
+            CsTeam team;
+            if (steamId != 0 && PlayersTeam.TryGetValue(steamId.ToString(), out team))
+            {
+                PlayersTeam.Remove(steamId.ToString());
+                AddTimer(0.5f, () =>
+                {
+                    player.ChangeTeam(team);
+                });
+            }
+
+            bool hasHumans = PlayersTeam.Keys.Any(k => ulong.TryParse(k, out ulong id) && id > 0);
+
+            if (PlayersTeam.Count == 0 || !hasHumans)
+            {
+                AddTimer(0.2f, () => {
+                    DeregisterEventHandler<EventPlayerConnectFull>(HandlerPlayerConnectFull);
+                    ClearData();
+                    currentState = States.Disabled;
+                    Server.ExecuteCommand("mp_restartgame 1");
+                    Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker] {ChatColors.Default} Todos os jogadores conectaram.");
+                });
+            }
+        }
+        return HookResult.Continue;
     }
 
     public void ShowVetoMenu()
@@ -823,7 +910,9 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     {
         CurrentPickTurn = 1;
         pickOrderIndex = 0;
-        currentState = States.Disabled;
+        //currentState = States.Disabled;
+        currentState = States.GettingReady;
+        RegisterEventHandler<EventPlayerConnectFull>(HandlerPlayerConnectFull);
         Server.ExecuteCommand($"map {MapsRemaining[0]}");
     }
 
@@ -853,7 +942,12 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         {
             var team = (index < mid) ? CsTeam.CounterTerrorist : CsTeam.Terrorist;
             player.ChangeTeam(team);
-            PlayersTeam.Add((player, team));
+
+            var steamId = player.SteamID;
+            if (steamId != 0)
+                PlayersTeam[player.SteamID.ToString()] = team;
+            else
+                PlayersTeam[player.PlayerName] = team;
             index++;
         }
         Captain1 = randomPlayers[0];
@@ -1141,7 +1235,11 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
             
             if (player != null && player.IsValid)
             {
-                PlayersTeam.Add((player, CsTeam.CounterTerrorist));
+                var steamId = player.SteamID;
+                if (steamId != 0)
+                    PlayersTeam[player.SteamID.ToString()] = CsTeam.CounterTerrorist;
+                else
+                    PlayersTeam[player.PlayerName] = CsTeam.CounterTerrorist;
                 player.ChangeTeam(CsTeam.CounterTerrorist);
             }
         }
@@ -1157,7 +1255,11 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
             
             if  (player != null && player.IsValid)
             {
-                PlayersTeam.Add((player, CsTeam.Terrorist));
+                var steamId = player.SteamID;
+                if (steamId != 0)
+                    PlayersTeam[player.SteamID.ToString()] = CsTeam.Terrorist;
+                else
+                    PlayersTeam[player.PlayerName] = CsTeam.Terrorist;
                 player.ChangeTeam(CsTeam.Terrorist);
             }
         }
@@ -1210,6 +1312,8 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     public void ClearData()
     {
         try { DeregisterEventHandler<EventPlayerDeath>(HandlerOnDeathEvent); } catch {}
+        try { DeregisterEventHandler<EventPlayerConnectFull>(HandlerPlayerConnectFull); } catch {}
+        try { RemoveCommandListener("jointeam", OnPlayerTryJoinTeam, HookMode.Pre); } catch {}
         Captain1 = null;
         Captain2 = null;
         pickOrder = PickOrder.ABABABAB;
