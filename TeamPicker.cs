@@ -16,6 +16,9 @@ using MySqlConnector;
 using System.Collections.Concurrent;
 using System.Globalization;
 using CounterStrikeSharp.API.Modules.Cvars;
+using MenuManager;
+using CounterStrikeSharp.API.Core.Capabilities;
+using CounterStrikeSharp.API.Modules.Menu;
 
 namespace TeamPicker;
 
@@ -92,6 +95,10 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     public override void Load(bool hotReload)
     {
         Task.Run(InitDatabase);
+        _api = _pluginCapability.Get();
+        if (_api == null)
+            Logger.LogInformation("ERRO: MenuManager Core não foi encontrado!");
+        
         Logger.LogInformation("TeamPicker loaded successfully!");
     }
 
@@ -108,6 +115,8 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     public ConcurrentDictionary<string, int> PlayersLevel = new ConcurrentDictionary<string, int>();
     public Dictionary<string, CsTeam> PlayersTeam = new Dictionary<string, CsTeam>();
     public List<CCSPlayerController> PlayersToPick = new List<CCSPlayerController>();
+    private IMenuApi? _api;
+    private readonly PluginCapability<IMenuApi?> _pluginCapability = new("menu:nfcore");
 
     public TeamPickerConfig Config { get; set; } = new TeamPickerConfig();
     public List<string> MapsRemaining { get; set; } = new List<string>();
@@ -529,8 +538,6 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     public void X1()
     {
         x1 = true;
-        Server.ExecuteCommand("mp_ct_default_secondary weapon_deagle");
-        Server.ExecuteCommand("mp_t_default_secondary weapon_deagle");
         
         List<CCSPlayerController>? specPlayers;
         if (bots)
@@ -606,9 +613,6 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
             Captain2?.ChangeTeam(CsTeam.Terrorist);
         }
 
-        Server.ExecuteCommand("mp_ct_default_secondary weapon_hkp2000");
-        Server.ExecuteCommand("mp_t_default_secondary weapon_glock");
-
         x1 = false;
         if (currentState == States.ChoosingCaptains)
             CaptainsPicking();
@@ -652,13 +656,18 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     [RequiresPermissions("@css/rcon")]
     public void Pick2Command(CCSPlayerController? player, CommandInfo command)
     {
-        PickCommand(player, command, true);
+        string parameters = command.ArgString;
+        if (string.IsNullOrWhiteSpace(parameters)) return;
+        
+        PickCommand(player, parameters, true);
     }
 
     public void CaptainsPicking()
     {
         currentState = States.CaptainsPicking;
         AddCommandListener("jointeam", OnPlayerTryJoinTeam, HookMode.Pre);
+        if (_api != null)
+            RegisterListener<Listeners.OnTick>(OnTick);
 
         DeregisterEventHandler<EventPlayerDeath>(HandlerOnDeathEvent);
         pickOrderIndex = 0;
@@ -689,6 +698,8 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
             player.ChangeTeam(CsTeam.Spectator);
         }
 
+        if (_api != null)
+            RegisterListener<Listeners.OnTick>(OnTick);
         ShowPickingMenu();
     }
 
@@ -704,25 +715,46 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
                                                   .Where(p => !PlayersTeam.ContainsKey(p.SteamID.ToString())).ToList();
 
         var index = 1;
-        activeCaptain?.PrintToChat("--------------------------------");
-        activeCaptain?.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Red} SUA VEZ DE ESCOLHER!{ChatColors.Default}");
-        foreach (var player in PlayersToPick)
+        if (_api == null)
         {
-            activeCaptain?.PrintToChat($" {ChatColors.Green} {index}{ChatColors.Default} -> {player.PlayerName}");
-            index++;
-        }
+            activeCaptain?.PrintToChat("--------------------------------");
+            activeCaptain?.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Red} SUA VEZ DE ESCOLHER!{ChatColors.Default}");
+            foreach (var player in PlayersToPick)
+            {
+                activeCaptain?.PrintToChat($" {ChatColors.Green} {index}{ChatColors.Default} -> {player.PlayerName}");
+                index++;
+            }
 
-        activeCaptain?.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !pick <numero>{ChatColors.Default} para escolher!");
-        activeCaptain?.PrintToChat("--------------------------------");
+            activeCaptain?.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !pick <numero>{ChatColors.Default} para escolher!");
+            activeCaptain?.PrintToChat("--------------------------------");
+        } 
+        else
+        {
+            if (activeCaptain == null) return;
+            var menu = _api.GetMenu(" {Red}Escolha um Jogador");
+            foreach (var player in PlayersToPick)
+            {
+                int currentIndex = index;
+                menu.AddMenuOption($"{player.PlayerName}", (p, option) => {PickCommand(activeCaptain, currentIndex.ToString(), false);});
+                index++;
+            }
+
+            menu.ExitButton = false;
+            menu.PostSelectAction = PostSelectAction.Close;
+            menu.Open(activeCaptain);
+        }
     }
 
     [ConsoleCommand("css_pick", "Pick a player")]
     public void OnPickCommand(CCSPlayerController? player, CommandInfo command)
     {
-        PickCommand(player, command, false);
+        string parameters = command.ArgString;
+        if (string.IsNullOrWhiteSpace(parameters)) return;
+
+        PickCommand(player, parameters, false);
     }
 
-    public void PickCommand(CCSPlayerController? player, CommandInfo command, bool debug)
+    public void PickCommand(CCSPlayerController? player, string parameters, bool debug)
     {
         if (currentState != States.CaptainsPicking) return;
         if (player == null) return;
@@ -730,9 +762,6 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         bool isCap1Turn = CurrentPickTurn == 1 && player == Captain1;
         bool isCap2Turn = CurrentPickTurn == 2 && player == Captain2;
         if (!isCap1Turn && !isCap2Turn && !debug) return;
-
-        string parameters = command.ArgString;
-        if (string.IsNullOrWhiteSpace(parameters)) return;
 
         if (!int.TryParse(parameters, out int index)) return;
 
@@ -774,6 +803,8 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
             CurrentPickTurn = 1;
             pickOrderIndex = 0;
             currentState = States.MapVeto;
+            if (_api != null)
+                RemoveListener<Listeners.OnTick>(OnTick);
             MapVeto();
         }
         else
@@ -794,6 +825,8 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         MapsRemaining = new List<string>(Config.MapPool);
         CurrentPickTurn = 1;
         Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Vai começar os vetos.");
+        if (_api != null)
+            RegisterListener<Listeners.OnTick>(OnTick);
         ShowVetoMenu();
     }
 
@@ -834,34 +867,58 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     {
         var activeCaptain = (CurrentPickTurn == 1) ? Captain1 : Captain2;
 
-        activeCaptain?.PrintToChat("--------------------------------");
-        activeCaptain?.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Red} SUA VEZ DE BANIR!{ChatColors.Default} ");
-
         int index = 1;
-        foreach (var map in MapsRemaining)
+        if (_api == null)
         {
-            activeCaptain?.PrintToChat($" {ChatColors.Green} {index} ->{ChatColors.Default} {map}");
-            index++;
-        }
+            activeCaptain?.PrintToChat("--------------------------------");
+            activeCaptain?.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Red} SUA VEZ DE BANIR!{ChatColors.Default} ");
 
-        activeCaptain?.PrintToChat($"Digite{ChatColors.Red} !ban <numero>{ChatColors.Default} para banir o mapa.");
-        activeCaptain?.PrintToChat("--------------------------------");
+            foreach (var map in MapsRemaining)
+            {
+                activeCaptain?.PrintToChat($" {ChatColors.Green} {index} ->{ChatColors.Default} {map}");
+                index++;
+            }
+
+            activeCaptain?.PrintToChat($"Digite{ChatColors.Red} !ban <numero>{ChatColors.Default} para banir o mapa.");
+            activeCaptain?.PrintToChat("--------------------------------");
+        }
+        else
+        {
+            if (activeCaptain == null) return;
+            var menu = _api.GetMenu(" {Red}Banir um Mapa");
+            foreach (var map in MapsRemaining)
+            {
+                int currentIndex = index;
+                menu.AddMenuOption($"{map}", (p, option) => {BanCommand(activeCaptain, currentIndex.ToString(), false);});
+                index++;
+            }
+
+            menu.ExitButton = false;
+            menu.PostSelectAction = PostSelectAction.Close;
+            menu.Open(activeCaptain);
+        }
     }
 
     [ConsoleCommand("css_ban", "Ban a map")]
     public void OnBanCommand(CCSPlayerController? player, CommandInfo command)
     {
-        BanCommand(player, command, false);
+        string parameters = command.ArgString;
+        if (string.IsNullOrWhiteSpace(parameters)) return;
+
+        BanCommand(player, parameters, false);
     }
 
     [ConsoleCommand("css_ban2", "Debug command: Ban bypass captain order")]
     [RequiresPermissions("@css/rcon")]
     public void Ban2Command(CCSPlayerController? player, CommandInfo command)
     {
-        BanCommand(player, command, true);
+        string parameters = command.ArgString;
+        if (string.IsNullOrWhiteSpace(parameters)) return;
+
+        BanCommand(player, parameters, true);
     }
 
-    public void BanCommand(CCSPlayerController? player, CommandInfo command, bool debug)
+    public void BanCommand(CCSPlayerController? player, string parameters, bool debug)
     {
         if (currentState != States.MapVeto) return;
         if (player == null) return;
@@ -869,9 +926,6 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         bool isCap1Turn = CurrentPickTurn == 1 && player == Captain1;
         bool isCap2Turn = CurrentPickTurn == 2 && player == Captain2;
         if (!isCap1Turn && !isCap2Turn && !debug) return;
-
-        string parameters = command.ArgString;
-        if (string.IsNullOrWhiteSpace(parameters)) return;
 
         if (!int.TryParse(parameters, out int index)) return;
 
@@ -912,6 +966,8 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         pickOrderIndex = 0;
         //currentState = States.Disabled;
         currentState = States.GettingReady;
+        if (_api != null)
+            RemoveListener<Listeners.OnTick>(OnTick);
         RegisterEventHandler<EventPlayerConnectFull>(HandlerPlayerConnectFull);
         Server.ExecuteCommand($"map {MapsRemaining[0]}");
     }
@@ -1314,15 +1370,45 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         try { DeregisterEventHandler<EventPlayerDeath>(HandlerOnDeathEvent); } catch {}
         try { DeregisterEventHandler<EventPlayerConnectFull>(HandlerPlayerConnectFull); } catch {}
         try { RemoveCommandListener("jointeam", OnPlayerTryJoinTeam, HookMode.Pre); } catch {}
+        try { RemoveListener<Listeners.OnTick>(OnTick); } catch {}
         Captain1 = null;
         Captain2 = null;
         pickOrder = PickOrder.ABABABAB;
         pickOrderIndex = 0;
+        RegisterListener<Listeners.OnTick>(OnTick);
         CurrentPickTurn = 1;
         x1 = false;
         //PlayersLevel.Clear();
         PlayersTeam.Clear();
         PlayersToPick.Clear();
         MapsRemaining.Clear();
+    }
+
+    public void OnTick()
+    {
+        if (_api == null) return;
+
+        if (currentState == States.CaptainsPicking)
+        {
+            var activeCaptain = (CurrentPickTurn == 1) ? Captain1 : Captain2;
+            if (activeCaptain != null && activeCaptain.IsValid && !activeCaptain.IsBot && activeCaptain.Connected == PlayerConnectedState.PlayerConnected)
+            {
+                 if (!_api.HasOpenedMenu(activeCaptain))
+                 {
+                    ShowPickingMenu();
+                 }
+            }
+        }
+        else if (currentState == States.MapVeto)
+        {
+            var activeCaptain = (CurrentPickTurn == 1) ? Captain1 : Captain2;
+            if (activeCaptain != null && activeCaptain.IsValid && !activeCaptain.IsBot && activeCaptain.Connected == PlayerConnectedState.PlayerConnected)
+            {
+                if (!_api.HasOpenedMenu(activeCaptain))
+                {
+                    ShowVetoMenu();
+                }
+            }
+        }
     }
 }

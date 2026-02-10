@@ -12,4 +12,10 @@
     <PackageReference Include="MySqlConnector" Version="2.5.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Reference Include="MenuManagerApi">
+      <HintPath>lib\MenuManagerApi.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
 </Project>
