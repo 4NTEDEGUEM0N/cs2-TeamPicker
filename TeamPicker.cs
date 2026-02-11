@@ -259,9 +259,9 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     {
         bots = bots == false;
         if (bots)
-            Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Bots {ChatColors.Green} activated{ChatColors.Default} .");
+            Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Bots{ChatColors.Green} activated{ChatColors.Default} .");
         else
-            Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Bots {ChatColors.Red} disabled{ChatColors.Default} .");
+            Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Bots{ChatColors.Red} disabled{ChatColors.Default} .");
     }
 
     [ConsoleCommand("css_help", "Show commands")]
@@ -281,11 +281,16 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
             player.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Capitão 1: {ChatColors.Green} {Captain1?.PlayerName}{ChatColors.Default}  (CT)");
             player.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Capitão 2: {ChatColors.Green} {Captain2?.PlayerName}{ChatColors.Default}  (TR)");
             player.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Ordem de Picks: {ChatColors.Green} {pickOrder}{ChatColors.Default} ");
-            player.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !captain1 <nome>{ChatColors.Default} para trocar o capitão 1.");
-            player.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !captain2 <nome>{ChatColors.Default} para trocar o capitão 2.");
+            if (_api == null)
+            {
+                player.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !captain1 <nome>{ChatColors.Default} para trocar o capitão 1.");
+                player.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !captain2 <nome>{ChatColors.Default} para trocar o capitão 2.");
+            }
+            else
+                player.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !captains {ChatColors.Default} para trocar os capitães.");
             player.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !random{ChatColors.Default} randomizar os capitães.");
-            player.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !pickorder{ChatColors.Default} para ver os modos disponíveis.");
-            player.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !captains{ChatColors.Default} para verificar a configuração atual.");
+            player.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !pickorder{ChatColors.Default} para ver as ordens de pick disponíveis.");
+            player.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !help{ChatColors.Default} para verificar a configuração atual.");
             player.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !tp start{ChatColors.Default} para confirmar.");
         }
         else if (currentState == States.Randomizing)
@@ -300,13 +305,31 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     [ConsoleCommand("css_modes", "Print TeamPicker Modes")]
     public void ModesCommand(CCSPlayerController? player, CommandInfo command)
     {
+        if (player == null) return;
+
         var index = 1;
-        foreach (string modes in Enum.GetNames(typeof(Modes)))
+        if (_api == null)
         {
-            player?.PrintToChat($" {ChatColors.Green} {index}{ChatColors.Default} -> {modes}");
-            index++;
+            foreach (string modes in Enum.GetNames(typeof(Modes)))
+            {
+                player?.PrintToChat($" {ChatColors.Green} {index}{ChatColors.Default} -> {modes}");
+                index++;
+            }
+            player?.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !tp <mode>{ChatColors.Default} para escolher!");
         }
-        player?.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !tp <mode>{ChatColors.Default} para escolher!");
+        else
+        {
+            var menu = _api.GetMenu(" {Red}Escolha um Modo");
+            foreach (string mode in Enum.GetNames(typeof(Modes)))
+            {
+                int currentIndex = index;
+                menu.AddMenuOption($"{mode}", (p, option) => {Server.ExecuteCommand($"css_tp {currentIndex}");});
+                index++;
+            }
+
+            menu.PostSelectAction = PostSelectAction.Close;
+            menu.Open(player);
+        }
     }
 
     public void Start()
@@ -391,14 +414,19 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         Captain1.ChangeTeam(CsTeam.CounterTerrorist); 
         Captain2.ChangeTeam(CsTeam.Terrorist);
 
-        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Capitão 1: {ChatColors.Green} {Captain1.PlayerName}{ChatColors.Default}  (CT)");
-        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Capitão 2: {ChatColors.Green} {Captain2.PlayerName}{ChatColors.Default}  (TR)");
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Capitão 1: {ChatColors.Green} {Captain1?.PlayerName}{ChatColors.Default}  (CT)");
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Capitão 2: {ChatColors.Green} {Captain2?.PlayerName}{ChatColors.Default}  (TR)");
         Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Ordem de Picks: {ChatColors.Green} {pickOrder}{ChatColors.Default} ");
-        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !captain1 <nome>{ChatColors.Default} para trocar o capitão 1.");
-        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !captain2 <nome>{ChatColors.Default} para trocar o capitão 2.");
+        if (_api == null)
+        {
+            Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !captain1 <nome>{ChatColors.Default} para trocar o capitão 1.");
+            Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !captain2 <nome>{ChatColors.Default} para trocar o capitão 2.");
+        }
+        else
+            Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !captains {ChatColors.Default} para trocar os capitães.");
         Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !random{ChatColors.Default} randomizar os capitães.");
-        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !pickorder{ChatColors.Default} para ver os modos disponíveis.");
-        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !captains{ChatColors.Default} para verificar a configuração atual.");
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !pickorder{ChatColors.Default} para ver as ordens de pick disponíveis.");
+        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !help{ChatColors.Default} para verificar a configuração atual.");
         Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !tp start{ChatColors.Default} para confirmar.");
     }
 
@@ -456,11 +484,40 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
     public void CaptainsCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (currentState != States.ChoosingCaptains) return;
+        if (_api == null) return;
 
-        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Capitão 1: {ChatColors.Blue} {Captain1?.PlayerName}{ChatColors.Default} (CT)");
-        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Capitão 2: {ChatColors.Orange} {Captain2?.PlayerName}{ChatColors.Default} (TR)");
-        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Ordem de Picks: {ChatColors.Green} {pickOrder}{ChatColors.Default} ");
-        Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !tp start{ChatColors.Default} para confirmar.");
+        var menu = _api.GetMenu(" {Red}Quer trocar qual capitão?");
+        menu.AddMenuOption($"Capitão 1", (p, option) => {ChooseCaptain(player, "1", command);});
+        menu.AddMenuOption($"Capitão 2", (p, option) => {ChooseCaptain(player, "2", command);});
+
+        menu.PostSelectAction = PostSelectAction.Nothing;
+        if (player != null)
+            menu.Open(player);
+    }
+
+    public void ChooseCaptain(CCSPlayerController? player, string index, CommandInfo command)
+    {
+        if (_api == null) return;
+
+        List<CCSPlayerController>? players;
+        if (bots)
+            players = Utilities.GetPlayers().Where(p => !p.IsHLTV && p != Captain1 && p != Captain2).ToList();
+        else
+            players = Utilities.GetPlayers().Where(p => !p.IsBot && !p.IsHLTV && p != Captain1 && p != Captain2).ToList();
+
+        var menu = _api.GetMenu($" {{Red}}Escolha o Capitão {index}");
+        foreach (var p in players)
+        {
+            var playerName = p.PlayerName;
+            menu.AddMenuOption($"{playerName}", (p, option) => {
+                Server.ExecuteCommand($"css_captain{index} {playerName}");
+                CaptainsCommand(player, command);
+            });
+        }
+
+        menu.PostSelectAction = PostSelectAction.Nothing;
+        if (player != null)
+            menu.Open(player);
     }
 
     public void RandomCaptains()
@@ -502,12 +559,29 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         if (string.IsNullOrWhiteSpace(parameters))
         {
             var index = 1;
-            foreach (string orders in Enum.GetNames(typeof(PickOrder)))
+            if (_api == null)
             {
-                player?.PrintToChat($" {ChatColors.Green} {index}{ChatColors.Default} -> {orders}");
-                index++;
+                foreach (string orders in Enum.GetNames(typeof(PickOrder)))
+                {
+                    player?.PrintToChat($" {ChatColors.Green} {index}{ChatColors.Default} -> {orders}");
+                    index++;
+                }
+                player?.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !pickorder <numero>{ChatColors.Default} para escolher!");
+                }
+            else
+            {
+                var menu = _api.GetMenu(" {Red}Escolha a ordem de Pick");
+                foreach (string order in Enum.GetNames(typeof(PickOrder)))
+                {
+                    int currentIndex = index;
+                    menu.AddMenuOption($"{order}", (p, option) => {Server.ExecuteCommand($"css_pickorder {currentIndex}");});
+                    index++;
+                }
+
+                menu.PostSelectAction = PostSelectAction.Close;
+                if (player != null)
+                    menu.Open(player);
             }
-            player?.PrintToChat($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} Digite{ChatColors.Red} !pickorder <numero>{ChatColors.Default} para escolher!");
         }
         else
         {
