@@ -32,11 +32,14 @@
 ## 🛠️ Instalação
 
 1.  Instale o **[CounterStrikeSharp](https://docs.cssharp.dev/)**.
-2.  Baixe a última release do **TeamPicker**.
-3.  Descompacte na pasta `addons/counterstrikesharp/plugins/`.
+2.  Instale o **[MenuManagerCS2](https://github.com/NickFox007/MenuManagerCS2)** e suas dependências:
+    *   **[PlayerSettings](https://github.com/NickFox007/PlayerSettingsCS2)**
+    *   **[AnyBaseLibCS2](https://github.com/NickFox007/AnyBaseLibCS2)**
+3.  Baixe a última release do **TeamPicker**.
+4.  Descompacte na pasta `addons/counterstrikesharp/plugins/`.
     *   Estrutura recomendada: `.../plugins/TeamPicker/TeamPicker.dll`
-4.  Reinicie o servidor.
-5.  O arquivo de configuração `TeamPicker.json` será criado automaticamente.
+5.  Reinicie o servidor.
+6.  O arquivo de configuração `TeamPicker.json` será criado automaticamente.
 
 ---
 
