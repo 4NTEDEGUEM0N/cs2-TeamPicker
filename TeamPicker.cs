@@ -593,7 +593,7 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         }
     }
 
-    private void IniciarContagemRegressiva(int segundos, Action func)
+    private void IniciarContagemRegressiva(int segundos, Action func, bool sound = false)
     {
         if (currentState == States.Disabled || currentState == States.Active) return;
 
@@ -601,10 +601,27 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
         {
             Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Red} {segundos}{ChatColors.Default}...");
             
-            AddTimer(1.0f, () => IniciarContagemRegressiva(segundos - 1, func));
+            AddTimer(1.0f, () => IniciarContagemRegressiva(segundos - 1, func, sound));
+
+            if (sound)
+            {
+                foreach (var p in Utilities.GetPlayers())
+                {
+                    if (p != null && p.IsValid && !p.IsBot && !p.IsHLTV)
+                        p.ExecuteClientCommand("play sounds/buttons/blip1.vsnd");
+                }
+            }
         }
         else
         {
+            if (sound)
+            {
+                foreach (var p in Utilities.GetPlayers())
+                {
+                    if (p != null && p.IsValid && !p.IsBot && !p.IsHLTV)
+                        p.ExecuteClientCommand("play sounds/buttons/bell1.vsnd");
+                }
+            }
             func.Invoke();
         }
     }
@@ -624,19 +641,26 @@ public class TeamPicker : BasePlugin, IPluginConfig<TeamPickerConfig>
             ChangeTeamHandler(player, CsTeam.Spectator);
         }
 
-        if (Captain1 != null && Captain2 != null)
-        {
-            Captain1.Respawn();
-            Captain2.Respawn();
-        }
-
         List<string> arenas = ["Bombsite A", "Meio", "Bomsite B"];
         Random rnd = new Random();
         var randomArenas = arenas.OrderBy(x => rnd.Next()).ToList();
         var selectedArena = randomArenas[0];
         Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} o X1 vai começar em 3 segundo!");
         Server.PrintToChatAll($" {ChatColors.Green} [TeamPicker]{ChatColors.Default} O local da batalha é o{ChatColors.Red} {selectedArena}{ChatColors.Default} !");
-        IniciarContagemRegressiva(3, IniciarX1);
+
+        if (Captain1 != null && Captain2 != null)
+        {
+            Captain1.Respawn();
+            Captain2.Respawn();
+
+            Captain1.PrintToCenterAlert("⚠️ O X1 VAI COMEÇAR!! ⚠️");
+            Captain1.PrintToCenter($"⚠️ {selectedArena} ⚠️");
+
+            Captain2.PrintToCenterAlert("⚠️ O X1 VAI COMEÇAR!! ⚠️");
+            Captain2.PrintToCenter($"⚠️ {selectedArena} ⚠️");
+        }
+
+        IniciarContagemRegressiva(3, IniciarX1, true);
     }
 
     public void IniciarX1()
